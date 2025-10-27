@@ -9,6 +9,8 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover - optional dependency
     psycopg = None
 
+PSYCOPG_AVAILABLE = psycopg is not None
+
 from ..models import NormalisedSignal
 
 SCHEMA_SQL = """

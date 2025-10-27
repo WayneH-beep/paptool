@@ -151,18 +151,144 @@ class Config:
         return self.raw.get("home_base", {})
 
 
+def _strip_quotes(value: str) -> str:
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        return value[1:-1]
+    return value
+
+
+def _parse_scalar(token: str):
+    token = token.strip()
+    if token == "":
+        return ""
+    lowered = token.lower()
+    if lowered in {"true", "yes"}:
+        return True
+    if lowered in {"false", "no"}:
+        return False
+    if lowered in {"null", "none"}:
+        return None
+    if (token.startswith('"') and token.endswith('"')) or (
+        token.startswith("'") and token.endswith("'")
+    ):
+        token = token[1:-1]
+        token = token.replace("\\\"", '"').replace("\\'", "'")
+        return token
+    try:
+        if "." in token:
+            return float(token)
+        return int(token)
+    except ValueError:
+        return token
+
+
+def _parse_block(lines, start_index: int, indent: int):
+    index = start_index
+    total = len(lines)
+    while index < total:
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        current_indent = len(line) - len(line.lstrip(" "))
+        if current_indent < indent:
+            return {}, index
+        if stripped.startswith("- "):
+            return _parse_list(lines, index, indent)
+        return _parse_dict(lines, index, indent)
+    return {}, total
+
+
+def _parse_list(lines, start_index: int, indent: int):
+    items = []
+    index = start_index
+    total = len(lines)
+    while index < total:
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        current_indent = len(line) - len(line.lstrip(" "))
+        if current_indent < indent:
+            break
+        if not stripped.startswith("- "):
+            break
+        value_part = stripped[2:].strip()
+        if value_part:
+            items.append(_parse_scalar(value_part))
+            index += 1
+        else:
+            value, new_index = _parse_block(lines, index + 1, indent + 2)
+            items.append(value)
+            index = new_index
+    return items, index
+
+
+def _parse_dict(lines, start_index: int, indent: int):
+    mapping = {}
+    index = start_index
+    total = len(lines)
+    while index < total:
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        current_indent = len(line) - len(line.lstrip(" "))
+        if current_indent < indent:
+            break
+        if stripped.startswith("- "):
+            break
+        if ":" not in stripped:
+            raise ValueError(f"Cannot parse line: {line}")
+        key_part, value_part = stripped.split(":", 1)
+        key = _strip_quotes(key_part.strip())
+        value_part = value_part.strip()
+        if value_part:
+            mapping[key] = _parse_scalar(value_part)
+            index += 1
+        else:
+            value, new_index = _parse_block(lines, index + 1, indent + 2)
+            mapping[key] = value
+            index = new_index
+    return mapping, index
+
+
+def _minimal_yaml_load(text: str) -> Dict[str, Any]:
+    lines = text.splitlines()
+    data, _ = _parse_block(lines, 0, 0)
+    if isinstance(data, dict):
+        return data
+    raise ValueError("Configuration must be a mapping at the top level.")
+
+
+def _load_config_text(text: str) -> Dict[str, Any]:
+    if yaml is not None:
+        return yaml.safe_load(text) or {}
+    return _minimal_yaml_load(text)
+
+
 def ensure_config(path: str = "./pap_config.yaml") -> Config:
     cfg_path = Path(path)
     if not cfg_path.exists():
         cfg_path.write_text(DEFAULT_CONFIG_YAML, encoding="utf-8")
         print(f"[i] Created default config at {path}. Edit it and run again.")
         raise SystemExit(0)
-    if yaml is None:
-        raise RuntimeError(
-            "PyYAML is required to load configuration files. Install it with `pip install pyyaml`."
-        )
     with cfg_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+        text = handle.read()
+    try:
+        data = _load_config_text(text)
+    except Exception as exc:
+        hint = (
+            "Install PyYAML with `pip install pyyaml` for full YAML support."
+            if yaml is None
+            else ""
+        )
+        raise RuntimeError(f"Failed to parse configuration file: {exc}. {hint}".strip()) from exc
     return Config(data)
 
 
